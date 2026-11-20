@@ -27,7 +27,7 @@ Never work under the root account day to day.
 - Launch a `t2.micro` EC2 instance (Amazon Linux 2023) — this is free-tier eligible and stays running as your terminal home base for the whole roadmap
 - Download the `.pem` key pair at launch time — **do not lose this file**, it's the only way to SSH in
 - **Security group:** restrict inbound SSH (port 22) to your own IP address only via the "My IP" option — never leave it open to `0.0.0.0/0`
-  - Tradeoff: this rule breaks if your home IP changes (happened during initial setup — see `labs/phase-0/lab-0.1-documentation.md`). A future upgrade is AWS Systems Manager Session Manager, which removes the need for an open SSH port entirely.
+  - Tradeoff: this rule breaks if your home IP changes (happened during initial setup — see `foundations/lab-0.1-documentation.md`). A future upgrade is AWS Systems Manager Session Manager, which removes the need for an open SSH port entirely.
 
 **Connecting via SSH (from Windows):**
 ```powershell
