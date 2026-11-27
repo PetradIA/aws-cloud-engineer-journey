@@ -2,116 +2,119 @@
 
 > **Request:** "Two app servers need shared files, and the team lead wants to know who can read what."
 
-**Status:** Done · **Date:** 2026-11-19 · **Region:** us-east-1 · **Account:** lab (old account)
+**Status:** Done · **Date:** 2026-11-19 · **Region:** us-east-1
 
-## Summary
+## Result
 
-Two EC2 instances now share one Amazon EFS file system. Access is controlled at two layers:
+Two EC2 instances share one **Amazon EFS** file system. Access is controlled at two layers:
 
-1. **Machine level (IAM):** only instances with the `ec2-efs-role` IAM role can mount the file system, and only over an encrypted (TLS) connection.
-2. **User level (Linux):** inside the share, files and folders are protected by normal Linux owner/group permissions, based on user IDs (UIDs).
+1. **Machine level (IAM):** only instances with the `ec2-efs-role` role can mount, and only over **TLS**.
+2. **User level (Linux):** inside the share, normal owner/group permissions protect each user's files.
 
-Root on a client is "squashed" (mapped to an anonymous user), so gaining `sudo` on a server does not give root over the shared storage.
+`root` on a server is **squashed** (treated as an anonymous user), so `sudo` on a server doesn't give root over the shared files.
 
-## Architecture
+**One gap found:** NFS identifies users only by their **UID number**, so a different user given alice's UID could read her files. The production fix is EFS access points (below).
+
+## How it works
 
 ```
-                 Internet
-                    │
-             Internet Gateway
-                    │
-┌──────────── VPC (efs-lab) ───────────────────────────────┐
-│                                                          │
-│  Public subnet (us-east-1a)     Private subnet (us-east-1b)
-│  ┌─────────────────────┐        ┌─────────────────────┐  │
-│  │ efs-lab-instance1   │  SSH   │ efs-lab-instance2   │  │
-│  │ (bastion + app)     │──────▶ │ (app, no public IP) │  │
-│  │ role: ec2-efs-role  │        │ role: ec2-efs-role  │  │
-│  └─────────┬───────────┘        └─────────┬───────────┘  │
-│            │ NFS over TLS (2049)          │              │
-│            └──────────▶  Amazon EFS  ◀────┘              │
-│                fs-0081eb4b40b474964                      │
-│                (mount target per AZ)                     │
-│                                                          │
-│  Private route table ── S3 gateway endpoint ──▶ Amazon S3│
-│  (package installs for Instance 2, no internet)          │
-└──────────────────────────────────────────────────────────┘
+ Public subnet (1a)                      Private subnet (1b)
+ efs-lab-instance1 ──── SSH (agent fwd) ──▶ efs-lab-instance2
+ role: ec2-efs-role                         role: ec2-efs-role
+        │                                          │
+        └──── NFS over TLS (2049) ──▶ Amazon EFS ◀─┘
+                                     (mount target per AZ)
+
+ Private route table ── S3 gateway endpoint ──▶ Amazon Linux package repos
 ```
+
+- The **file system policy** (on EFS) allows only `ec2-efs-role` and **denies any unencrypted connection**.
+- The **role** allows mount and write, but not root access, which is what turns on root squash.
+- The private instance installs packages through a free **S3 gateway endpoint**, with no internet access.
 
 ## What I built
 
-| Component | Detail |
+| Resource | Setting |
 | --- | --- |
-| VPC | Public subnet (us-east-1a) and private subnet (us-east-1b), Internet Gateway, public route table |
-| EC2 | `efs-lab-instance1` (public, SSH entry point) and `efs-lab-instance2` (private, reached by SSH agent forwarding) |
-| EFS | `fs-0081eb4b40b474964`, mount targets in both subnets, NFS port 2049 allowed only from the instances' security groups |
-| IAM role | `ec2-efs-role`: `elasticfilesystem:ClientMount` + `ClientWrite` on this file system only (no `ClientRootAccess`) |
-| EFS file system policy | Allows only `ec2-efs-role`; denies any connection where `aws:SecureTransport` is false |
-| Mount helper | `amazon-efs-utils` on both instances, mounted with `mount -t efs -o tls,iam` |
-| S3 gateway endpoint | Lets the private instance install packages from Amazon Linux repos (hosted in S3) with no internet access |
-| Linux users | `alice` and `bob` created on both instances with matching UIDs, private folders with owner-only permissions |
+| VPC | Public subnet (1a) + private subnet (1b), internet gateway |
+| `efs-lab-instance1` / `instance2` | Public (SSH entry point) / private (reached by SSH agent forwarding) |
+| EFS `fs-0081eb4b40b474964` | Mount target in each subnet; NFS 2049 allowed only from the instances' SGs |
+| Role `ec2-efs-role` | `ClientMount` + `ClientWrite` on this file system only, **no `ClientRootAccess`** |
+| File system policy | Allow only `ec2-efs-role`; deny if not TLS |
+| `amazon-efs-utils` | Mount helper on both instances: `mount -t efs -o tls,iam` |
+| S3 gateway endpoint | Package installs for the private instance |
+| Linux users | `alice` and `bob` on both servers with matching UIDs, owner-only private folders |
 
-## Tests and evidence
+## Tests
 
-| # | Instance | Test | Expected | Result | Evidence |
-| --- | --- | --- | --- | --- | --- |
-| 1 | Instance 2 (no role) | Plain NFS mount | Denied | `access denied by server` | `01-instance2-plain-nfs-denied.png` |
-| 2 | Instance 2 (no role) | Helper mount, TLS only | Denied (no IAM identity) | `access denied by server` | `02-instance2-tls-no-iam-denied.png` |
-| 3 | Instance 2 (no role) | Helper mount, TLS + IAM | Fails (no credentials) | Credentials not found | `03-instance2-tls-iam-no-role-creds-missing.png` |
-| 4 | Instance 1 (role) | Plain NFS, TLS only, TLS + IAM | Fail, fail, success | Fail, fail, mounted | `04-instance1-nfs-denied-tls-denied-tls-iam-mounted.png` |
-| 5 | Instance 1 (role) | `sudo touch` on EFS root | Denied (root squash) | `Permission denied` | `05-instance1-root-squash-denied.png` |
-| 6 | Instance 2 (role attached) | Helper mount, TLS + IAM, read shared file | Success | Mounted, read `test.txt` written from Instance 1 | `06-instance2-with-role-mounted-reads-shared-file.png` |
-| — | Both | User `bob` reads `alice`'s private folder | Denied | Denied on both servers | (Nov 18 session) |
-| — | Both | User `eve` with **alice's UID** reads alice's folder | Should be denied | **Allowed** — see finding below | (Nov 18 session) |
+| # | Test | Result | Evidence |
+| --- | --- | --- | --- |
+| 1 | Instance 2 (no role): plain NFS mount | Denied | `01` |
+| 2 | Instance 2 (no role): TLS mount without IAM | Denied | `02` |
+| 3 | Instance 2 (no role): TLS + IAM mount | Fails, no credentials | `03` |
+| 4 | Instance 1 (role): plain / TLS only / TLS + IAM | Denied / denied / **mounted** | `04` |
+| 5 | Instance 1: `sudo touch` on EFS | Denied (root squash) | `05` |
+| 6 | Instance 2 with role: TLS + IAM, read file written on Instance 1 | **Mounted, file visible** | `06` |
+| 7 | `bob` reads alice's folder | Denied on both servers | — |
+| 8 | `eve`, given **alice's UID**, reads alice's folder | **Allowed** (the gap) | — |
+
+Evidence numbers match the files in [`screenshots/`](screenshots/).
 
 ## Who can read what
 
-| Who | Can mount EFS? | Can read/write alice's folder? | Why |
+| Who | Mount EFS? | Read alice's folder? | Why |
 | --- | --- | --- | --- |
-| Instance with `ec2-efs-role` | Yes (TLS only) | Depends on Linux user | Allowed by IAM + file system policy |
-| Instance without the role | No | No | No IAM identity, policy has no allow for it |
-| Any client over plain NFS | No | No | Explicit deny on unencrypted transport |
-| `root` / `sudo` on a client | Mount yes, but acts as "nobody" | No | Root squash (no `ClientRootAccess`) |
-| `alice` | — | Yes | Owner of the folder |
-| `bob` | — | No | Not owner, folder is owner-only |
-| Any user with alice's UID | — | **Yes** | NFS trusts the UID number the client sends |
+| Instance with `ec2-efs-role` | Yes, TLS only | Depends on Linux user | Allowed by role + file system policy |
+| Instance without the role | No | No | No IAM identity |
+| Any plain NFS client | No | No | Explicit deny on unencrypted transport |
+| `root` / `sudo` | Mounts, but acts as "nobody" | No | Root squash |
+| `alice` | — | Yes | Owner |
+| `bob` | — | No | Folder is owner-only |
+| Anyone with alice's UID | — | **Yes** | NFS trusts the UID the client sends |
 
-## What went wrong and how I fixed it
+## Problems I hit
 
-| Problem | Cause | Fix |
-| --- | --- | --- |
-| A different user (`eve`) given alice's UID could read alice's private folder | NFS identifies users by UID number only; it trusts whatever the client sends | Added IAM control at machine level so only trusted instances can mount at all (root squash also stops root impersonation). Full fix in production: EFS access points (see below) |
-| `ssh` from Instance 1 to Instance 2 failed with `Permission denied (publickey)` | Connected to Instance 1 without agent forwarding (`-A`), so no key was available for the hop | Reconnected with `ssh -A`; added `ForwardAgent yes` in `~/.ssh/config` |
-| `amazon-efs-utils` not installed on Instance 2 and no way to install it | Private subnet has no route to the internet | Created an S3 gateway endpoint on the private route table (free, private, S3-only) instead of a NAT gateway |
-| Old plain NFS mounts stopped working after the policy | Expected: the policy now requires TLS and IAM | Switched to `mount -t efs -o tls,iam` |
+| Problem | Fix |
+| --- | --- |
+| `eve` with alice's UID read alice's folder | Limited mounting to trusted instances (IAM) + root squash. Full fix: EFS access points |
+| SSH hop to Instance 2: `Permission denied (publickey)` | Reconnected with `ssh -A` (agent forwarding) |
+| Private instance couldn't install `amazon-efs-utils` | Added an S3 gateway endpoint instead of a paid NAT gateway |
+| Old plain NFS mounts stopped working | Expected after the TLS policy. Switched to `-o tls,iam` |
 
-## What I'd do in production
+## In production
 
-- **EFS access points:** give each application its own access point that forces a fixed UID/GID and a root folder. The client-sent UID is then ignored, which closes the eve gap for real.
-- **Scope the role per app:** one IAM role per application, each allowed only its own access point (`elasticfilesystem:AccessPointArn` condition).
-- **Dedicated route tables:** the private subnet currently uses the VPC's main route table. In production, leave the main table empty and give each subnet its own named table.
-- **Endpoint policy:** restrict the S3 gateway endpoint to the Amazon Linux repo buckets only.
-- **Persistent mounts:** add the mount to `/etc/fstab` (with `_netdev,tls,iam`) so it survives reboots.
-- **Infrastructure as code:** rebuild all of this in Terraform so it deploys identically every time.
+- **EFS access points** that force a fixed UID/GID per app, so the client's UID is ignored (closes the gap).
+- One role per app, each allowed only its own access point.
+- Each subnet gets its own named route table (not the VPC's main one).
+- Restrict the S3 endpoint policy to the Amazon Linux repo buckets.
+- Persistent mounts in `/etc/fstab` with `_netdev,tls,iam`.
+- Build it all in Terraform.
 
-## Key commands
+## Key takeaways
 
-```bash
-# Install the EFS mount helper
-sudo yum install -y amazon-efs-utils
+- NFS trusts the client completely. Real access control needs a layer above the UID.
+- An identity policy (role) and a resource policy (file system) work together. The resource policy keeps everyone else out.
+- An explicit `Deny` always beats an `Allow`.
+- VPC endpoints let private servers reach AWS services without internet access.
 
-# Mount with encryption + IAM
-sudo mount -t efs -o tls,iam fs-0081eb4b40b474964:/ /mnt/efs
+<details>
+<summary><b>Request flow (click to expand)</b></summary>
 
-# Check the mount
-df -h | grep efs
+| # | Who → who | Port | How it's authenticated |
+| --- | --- | --- | --- |
+| 1 | Laptop → Instance 1 | 22 | SSH key, with agent forwarding (`-A`) |
+| 2 | Instance 1 → Instance 2 (private IP) | 22 | Same key, forwarded by the agent; never copied to the server |
+| 3 | `efs-utils` → instance metadata (IMDS) | 80, link-local | Returns `ec2-efs-role` temporary credentials |
+| 4 | Instance → EFS mount target | 2049 over TLS | IAM-signed mount as `ec2-efs-role`; file system policy checks the role and `aws:SecureTransport` |
+| 5 | File reads/writes on EFS | 2049 over TLS | Linux permissions by UID/GID; root mapped to "nobody" |
+| 6 | Instance 2 → package repos via S3 gateway endpoint | 443 | Route table sends S3 traffic to the endpoint; no internet path |
 
-# Unmount
-sudo umount /mnt/efs
-```
+</details>
 
-## File system policy used
+<details>
+<summary><b>Revision notes (click to expand)</b></summary>
 
+**File system policy**
 ```json
 {
   "Version": "2012-10-17",
@@ -134,11 +137,29 @@ sudo umount /mnt/efs
   ]
 }
 ```
+- Statement 1: only this role can mount and write. No `ClientRootAccess`, so root is squashed.
+- Statement 2: anyone connecting **without TLS** is denied, and an explicit Deny beats any Allow.
 
-## What I learned
+**The three EFS actions**
+| Action | Allows |
+| --- | --- |
+| `ClientMount` | Mount (read-only on its own) |
+| `ClientWrite` | Write |
+| `ClientRootAccess` | Act as root on the file system. Leave it out → root squash |
 
-- NFS on its own trusts the client completely. Real access control on shared storage needs a layer above the UID.
-- An identity policy (on the role) and a resource policy (on the file system) work together; the resource policy is what keeps everyone else out.
-- An explicit `Deny` always wins over an `Allow`.
-- Private instances can reach specific AWS services privately through VPC endpoints, without opening them to the internet.
-- The AWS credential lookup order (credentials file → config → container → instance role) explains why instance roles beat stored access keys.
+**Commands**
+```bash
+sudo yum install -y amazon-efs-utils                           # EFS mount helper
+sudo mount -t efs -o tls,iam fs-0081eb4b40b474964:/ /mnt/efs   # mount with TLS + IAM
+df -h | grep efs                                               # confirm it's mounted
+sudo umount /mnt/efs                                           # unmount
+ssh -A ec2-user@<instance1-public-ip>                          # connect with agent forwarding
+```
+
+**Why the UID gap exists:** NFS sends the user's UID number with each request, and EFS trusts it. Two servers with matching UIDs share permissions, but so does anyone who can create a user with the same number. Access points fix this by overriding the UID on the server side.
+
+**AWS credential lookup order:** environment variables → credentials file → config file → container credentials → instance role. That's why an instance role works without stored keys, and why stray keys on a server would quietly take priority.
+
+**S3 gateway endpoint vs NAT gateway:** the gateway endpoint is free and only reaches S3 (where Amazon Linux repos live). A NAT gateway costs per hour and opens the whole internet.
+
+</details>

@@ -26,15 +26,22 @@ Each ticket is treated like a task on a real cloud team:
 | # | Ticket | Skills | Status |
 | --- | --- | --- | --- |
 | 01 | [Shared storage for two app servers, with access control](tickets/01-efs-shared-storage/) | EFS, IAM roles, resource policies, TLS, Linux permissions, VPC endpoints | Done |
-| 02 | "Our website went down when one server crashed. Make it survive that." | ALB, Auto Scaling, multi-AZ, security group chaining | Next |
-| 03 | "The app needs a database, and the auditor says no passwords in code." | RDS Multi-AZ, Secrets Manager | Planned |
-| 04 | "Marketing needs a static site, and security says the bucket can't be public." | S3, CloudFront, Origin Access Control | Planned |
-| 05 | "We got a surprise bill and nobody noticed the outage." | CloudWatch, SNS, billing alarms | Planned |
-| 06 | "Someone changed a security group and something broke. Who did it?" | CloudTrail, AWS Config | Planned |
-| 07 | "A contractor needs to start and stop dev servers only, for 2 weeks." | IAM permission boundaries, temporary credentials | Planned |
-| 08 | "Customer data must be encrypted and we must control the keys." | S3, KMS customer-managed keys | Planned |
-| 09 | "An access key leaked on GitHub. What now?" | GuardDuty, CloudTrail, incident response | Planned |
-| 10 | "Security audit next week. Find what's wrong." | Security Hub, remediation | Planned |
+| 02 | "Our website went down when one server crashed. Make it survive that." | ALB, Auto Scaling, multi-AZ, security group chaining | Done (write-up coming) |
+| 03 | "The app needs a database, and the auditor says no passwords in code." | RDS Multi-AZ, Secrets Manager | Done (write-up coming) |
+| 04 | [Static site from a private S3 bucket, served through CloudFront](tickets/04-s3-cloudfront-private-site/) | S3, CloudFront, Origin Access Control, bucket policies | Done |
+| 05 | [Shell access to a private server with no SSH](tickets/05-ssm-session-manager/) | SSM Session Manager, VPC interface endpoints, private DNS, least-privilege IAM, audit trail | Done |
+| 06 | [Show me the traffic hitting our servers](tickets/06-vpc-flow-logs/) | VPC Flow Logs, CloudWatch Logs Insights, Apache access logs, traffic investigation | Done |
+| 07 | "Nobody noticed the outage until a customer called." | CloudWatch agent, alarms, SNS | Next |
+| 08 | "Someone changed a security group and something broke. Who did it?" | CloudTrail, EventBridge, SNS | Planned |
+| 09 | "A contractor needs to start and stop dev servers only, for 2 weeks." | STS AssumeRole, trust policies, temporary credentials | Planned |
+| 10 | "Customer data must be encrypted and we must control the keys." | KMS customer-managed keys, S3 SSE-KMS, CloudFront | Planned |
+| 11 | "Bots are hammering the website." | AWS WAF, rate-based rules, CloudFront | Planned |
+| 12 | "Put the whole app behind one secure front door." | CloudFront, ALB, EC2, RDS (full 3-tier request path) | Planned |
+| 13 | "An access key leaked on GitHub. What now?" | GuardDuty, CloudTrail, incident response | Planned |
+| 14 | "Security audit next week. Find what's wrong." | Security Hub, AWS Config, remediation | Planned |
+| 15 | "Prove our defences actually work." | Red team / blue team: Kali vs Ubuntu in an isolated VPC, detection | Planned |
+
+Each ticket adds one main new idea and builds on what earlier tickets set up. Every write-up includes a **request flow** section tracing who talks to whom, on which port, and how each call is authenticated.
 
 ## Where this is heading
 
